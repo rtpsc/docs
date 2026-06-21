@@ -16,6 +16,12 @@
           "index",
           "quickstart"
         ]
+      },
+      {
+        "group": "Deployment",
+        "pages": [
+          "deployment/backoffice-module"
+        ]
       }
     ],
     "global": {
@@ -41,6 +47,12 @@
             "pages": [
               "index",
               "quickstart"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/backoffice-module"
             ]
           }
         ]
