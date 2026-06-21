@@ -31,7 +31,21 @@
           "icon": "newspaper"
         }
       ]
-    }
+    },
+    "versions": [
+      {
+        "version": "Untitled Version",
+        "pages": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "index",
+              "quickstart"
+            ]
+          }
+        ]
+      }
+    ]
   },
   "logo": {
     "light": "/logo/light.svg",
