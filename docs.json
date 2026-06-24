@@ -16,6 +16,12 @@
           "index",
           "quickstart"
         ]
+      },
+      {
+        "group": "Operations Console",
+        "pages": [
+          "operations-console"
+        ]
       }
     ],
     "global": {
@@ -41,6 +47,12 @@
             "pages": [
               "index",
               "quickstart"
+            ]
+          },
+          {
+            "group": "Operations Console",
+            "pages": [
+              "operations-console"
             ]
           }
         ]

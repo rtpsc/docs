@@ -1,0 +1,126 @@
+---
+title: "Operations console"
+description: "Review the RTPSC operations console dashboards, Next.js operator API routes, and the optional local Live Feed JSON API for staging review tooling."
+---
+
+The RTPSC Operations Console is a read-only Next.js surface that gives operators a single place to review platform state — workspace interfaces, registered endpoints, action abilities, WebSocket channels, and system health alerts. A companion Live Feed JSON API exposes the same metadata over plain HTTP for local review tooling.
+
+<Note>
+  The console and the Live Feed API are **staging-only**. Dashboards default to read-only, external transmissions stay blocked behind a signed envelope and human review, and the local API server only starts when an operator explicitly enables it.
+</Note>
+
+## When to use it
+
+Use the operations console when you need to:
+
+- Confirm which dashboards, endpoints, action abilities, and WebSocket channels are registered for the current runtime.
+- Review system health alerts across the health, worker, queue, and compliance channels.
+- Inspect operator command guidance and the latest runtime summary from a single terminal-style page.
+- Pull the same metadata locally as JSON for review tooling, smoke tests, or scripted checks.
+
+If you are a taxpayer-facing user or you only need product overviews, stay in the [Introduction](/) and [Quickstart](/quickstart) pages. Those cover the masterfile platform without operator-only surfaces.
+
+## Dashboards
+
+The console ships four dashboards, all rendered from the shared review-gated runtime summary.
+
+| Route | Dashboard | What it shows |
+| --- | --- | --- |
+| `/` | Command Center | Workspace interfaces, registered API endpoints, action abilities, WebSocket channels, system alerts, and the current guardrail mode. |
+| `/workspace` | ERO Workspace | The action ability catalog as cards, each marked **Review Required** or **Ready**, for triaging operator work. |
+| `/system-health` | System Health | Alert panels per channel (health, worker, queue, compliance) with severity, message, and status. |
+| `/terminal` | Operator Terminal | Read-only command guidance for staged runtime checks and a JSON dump of the current runtime summary. |
+
+Every dashboard defaults to the read-only guardrail posture. Action abilities surface in the UI but cannot run external transmissions without a signed envelope and human review.
+
+## Next.js API endpoints
+
+The Next.js app exposes four route handlers that back the dashboards. They are safe to call from internal review tooling — none of them mutate state and none of them render secrets.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/live-feed` | Runtime registry summary (dashboards, endpoints, action abilities, WebSocket channels). |
+| `GET` | `/api/system-health` | System health alerts with severity, channel, message, and status. |
+| `GET` | `/api/actions` | Action ability catalog with `code`, `label`, and `requiresReview` flags. |
+| `GET` | `/api/ws` | WebSocket channel manifest. Returns the channel list and a note that persistent socket upgrades must be attached at the runtime gateway. |
+
+`/api/ws` publishes only the channel manifest. Wiring real WebSocket upgrades requires attaching a Node or gateway service in your runtime infrastructure — the route handler itself does not hold persistent connections.
+
+## Live Feed JSON API
+
+`server.js` can also start a standalone local JSON server that mirrors the live-feed interface for tooling that does not run inside the Next.js app. The server is **disabled by default** and starts only when an operator opts in.
+
+### Enable the API locally
+
+Set the environment variable before starting `server.js`:
+
+```bash
+ENABLE_LIVE_FEED_API=true LIVE_FEED_API_PORT=8787 node server.js
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ENABLE_LIVE_FEED_API` | `false` | Set to `true` to start the local Live Feed JSON server. Any other value leaves it off. |
+| `LIVE_FEED_API_PORT` | `8787` | Port the local JSON server listens on. |
+
+When the API is disabled, `server.js` logs:
+
+```text
+[LIVE_FEED_API] Disabled. Set ENABLE_LIVE_FEED_API=true to start the API server.
+```
+
+When it is enabled, it logs the listening port and serves JSON for the operator endpoints below.
+
+### Operator endpoints
+
+The local server exposes review-gated metadata only. There are no write endpoints.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Runtime health handshake. Returns `{ status: "ok", source, timestamp }`. |
+| `GET` | `/live-feed` | Current live-feed interface metadata, including the dataset pull catalog. |
+| `GET` | `/jobs` | Available job and dataset pulls (TDS, SOR, TINM, IRIS, MeF, Masterfile) plus the automated phraser. |
+| `GET` | `/next-dashboard` | Routes, API endpoints, WebSocket channels, action abilities, and guardrails for the Next.js console. |
+| `GET` | `/system-health`, `/transmittal`, `/workspace`, `/compliance`, `/accounts`, `/services`, `/rosssign`, `/windows-shell`, `/forms-cabinet`, `/billing`, `/brand`, `/self-healing`, `/aws-deployment`, `/cloudflare-worker`, `/auth`, `/assistant`, `/legal` | Module-specific configuration registries. |
+| `GET` | `/safeguards` | Application-wide safeguards, kill switches, and review controls. |
+
+Unknown paths return `404` with the supported endpoint list in the body.
+
+### Example: list registered dashboards and channels
+
+```bash
+curl http://localhost:8787/next-dashboard
+```
+
+```json
+{
+  "version": "1.0",
+  "applicationName": "RTPSC Next.js Operations Console",
+  "posture": "review-gated-dashboard-and-api-layer",
+  "routes": [
+    { "path": "/", "label": "Command Center", "surface": "dashboard" },
+    { "path": "/workspace", "label": "ERO Workspace", "surface": "workspace" },
+    { "path": "/system-health", "label": "System Health Alerts", "surface": "alerts" },
+    { "path": "/terminal", "label": "Operator Terminal", "surface": "terminal-output" }
+  ],
+  "websocketChannels": [
+    "system.health",
+    "queue.alerts",
+    "worker.audit",
+    "terminal.output",
+    "compliance.release"
+  ]
+}
+```
+
+## Guardrails
+
+The operations console and Live Feed API are intentionally restricted:
+
+- **Read-only by default.** Dashboards do not submit transmissions.
+- **Human review before external transmission.** Action abilities flagged `Review Required` cannot dispatch externally without operator approval.
+- **No secret rendering.** Credentials, tokens, and other secrets are never returned by the API or rendered in any dashboard.
+- **Dry-run before repair.** Self-healing flows run as audit-only dry runs unless an explicitly reviewed repair mode is enabled.
+- **Signed envelope required for queue actions.** Queue dispatch requires the HMAC-signed envelope produced by `server.js`.
+
+Leave `ENABLE_LIVE_FEED_API` unset in production unless an operator explicitly needs the local JSON server for a review session.
