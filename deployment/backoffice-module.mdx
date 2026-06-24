@@ -1,0 +1,168 @@
+---
+title: "Deploy the backoffice module"
+description: "Package the RTPSC backoffice integration module for AWS S3 and Amplify hosting, deploy the Cloudflare edge worker, and configure deployment secrets."
+---
+
+This guide walks you through packaging the RTPSC backoffice integration module as a reviewable zip artifact for AWS S3 or AWS Amplify, and deploying the read-only Cloudflare edge worker that fronts live-feed metadata, system health, and action manifests.
+
+Use this guide when you need to:
+
+- Produce a release artifact for the AWS Amplify "Deploy without Git" review flow.
+- Promote a reviewed zip from staging to production in a private S3 bucket.
+- Publish or update the Cloudflare Worker that exposes edge endpoints for the operations console.
+
+<Note>
+  The packaging and deploy flows are intentionally review-gated. They never embed live credentials, never auto-promote between environments, and never perform external transmissions without human approval.
+</Note>
+
+## Prerequisites
+
+Before you begin, you must have:
+
+- Node.js 18 or later and `npm` installed.
+- The `zip` command available on your `PATH` (used by the packaging script).
+- AWS CLI credentials with permission to write to your private deployment bucket (for the S3 upload step).
+- A Cloudflare account with `wrangler` authenticated (for the worker deploy step).
+- All required environment variables configured in your shell, AWS Amplify, AWS Secrets Manager, or the Cloudflare dashboard. See [Required environment variables](#required-environment-variables).
+
+## Required environment variables
+
+Configure these through your shell, AWS Amplify environment variables, AWS Secrets Manager, or Cloudflare dashboard secrets. **Never** commit them or paste them into `amplify.yml`, `wrangler.toml`, or any source file.
+
+| Variable | Purpose |
+| --- | --- |
+| `RTPSC_DEPLOYMENT_BUCKET` | Target private S3 bucket name for the zip artifact. |
+| `RTPSC_DEPLOYMENT_PREFIX` | Optional S3 object prefix such as `releases/staging`. Defaults to `releases/staging` if unset. |
+| `ATLAS_AWS_ACCOUNT_ARN` | MongoDB Atlas AWS account ARN copied from Atlas when configuring S3 integration. |
+| `ATLAS_AWS_EXTERNAL_ID` | MongoDB Atlas external ID copied from Atlas. |
+| `VANTAGE_DB_PASSWORD` | Password for the MongoDB `ceo_db_user` service account used by the runtime driver. |
+| `MODEL_API_KEY` | Model provider API key binding used by the runtime context check. |
+
+<Warning>
+  Do not commit account ARNs, external IDs, AWS access keys, Atlas service-account secrets, MongoDB passwords, model API keys, or `.env` files. The packaging script excludes `.env` and `.git` by default, but it cannot detect secrets pasted into other tracked files.
+</Warning>
+
+## Package the AWS deployment
+
+The packaging flow produces `dist/rtpsc-backoffice-deployment.zip`, suitable for upload to a private S3 bucket or for the AWS Amplify "Deploy without Git" workflow.
+
+### Step 1: Run the pre-package validations
+
+Run all three checks before producing a package. Each one catches a different class of release blocker.
+
+<Steps>
+  <Step title="Validate JSON files">
+    Catches malformed JSON (including `package.json`) before the Amplify build parser fails the build.
+
+    ```bash
+    npm run validate:json
+    ```
+  </Step>
+  <Step title="Validate file definitions">
+    Detects unterminated here-doc blocks (missing `EOF` delimiters) and final lines ending in a shell continuation slash that can cause merge or deployment errors.
+
+    ```bash
+    npm run validate:file-definitions
+    ```
+  </Step>
+  <Step title="Dry-run the self-healing worker">
+    Emits a JSON audit report covering syntax health, registry integrity, and UI asset checks. The worker is dry-run only — it never writes code unless a future reviewed repair mode is explicitly approved.
+
+    ```bash
+    npm run worker:self-healing
+    ```
+  </Step>
+</Steps>
+
+### Step 2: Build the zip artifact
+
+```bash
+npm run package:aws
+```
+
+The script writes `dist/rtpsc-backoffice-deployment.zip` and excludes:
+
+- `.env` files and the `.git` directory.
+- `node_modules` and prior `dist` artifacts.
+- The `authorized_8821_vault` directory.
+- PDF, XLSX, CSV, and ZIP files.
+
+### Step 3: Upload to S3 after review
+
+After the artifact has been reviewed, upload it to your private bucket with server-side encryption enabled:
+
+```bash
+aws s3 cp dist/rtpsc-backoffice-deployment.zip \
+  "s3://$RTPSC_DEPLOYMENT_BUCKET/${RTPSC_DEPLOYMENT_PREFIX:-releases/staging}/rtpsc-backoffice-deployment.zip" \
+  --sse AES256
+```
+
+### Step 4: Promote through Amplify
+
+The repository ships an `amplify.yml` build specification for direct Amplify detection or for the "Deploy without Git from S3 or zip file" flow. The build spec:
+
+- Installs production dependencies with `npm install --omit=dev`.
+- Runs `npm run validate:json` and `npm run check:vantage:db`.
+- Syntax-checks `server.js`.
+- Runs the dry-run self-healing worker and file-definition validator.
+- Publishes the static operator surfaces from `amplify-dist`.
+
+Configure `VANTAGE_DB_PASSWORD`, `MODEL_API_KEY`, `ATLAS_AWS_ACCOUNT_ARN`, and `ATLAS_AWS_EXTERNAL_ID` as Amplify environment variables or through AWS Secrets Manager. Do not paste them into the build spec.
+
+### S3 and Atlas guardrails
+
+- Keep the S3 public access block enabled on the deployment bucket.
+- Enable bucket versioning so you can roll back to a prior release.
+- Require manual review before promoting a zip from staging to production.
+- Treat the package as a static/runtime artifact, not a live IRS transmittal release.
+- Use the bundled Atlas trust policy template as a placeholder only — substitute live values from environment variables or a secret manager at deployment time.
+
+## Deploy the Cloudflare edge worker
+
+The Cloudflare worker is a read-only edge surface that exposes runtime metadata, system-health alerts, an action ability catalog, and a WebSocket channel manifest. It does not perform IRS, MongoDB, billing, or queue write actions.
+
+### Worker endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/health` | Reports worker liveness and the bound `ENVIRONMENT` value. |
+| `/live-feed` | Returns runtime metadata for the operations console live feed. |
+| `/system-health` | Returns the edge alert envelope, including review-gated guardrail status. |
+| `/actions` | Lists edge action abilities and which ones require review before execution. |
+| `/ws-manifest` | Lists the WebSocket channels (`edge.health`, `queue.alerts`, `worker.audit`, `terminal.output`). Persistent upgrades must be attached at the runtime gateway. |
+
+### Step 1: Syntax-check and run locally
+
+```bash
+npm run cf:check
+npm run cf:dev
+```
+
+`cf:check` runs `node --check` against the worker entrypoint. `cf:dev` runs `wrangler dev` for local iteration against `wrangler.toml`.
+
+### Step 2: Deploy after review
+
+```bash
+npm run cf:deploy
+```
+
+This runs `wrangler deploy` against the worker defined in `wrangler.toml`. Only run this after the change has been reviewed and signed off.
+
+### Cloudflare guardrails
+
+- Keep all secrets in Cloudflare dashboard secrets or environment bindings — never in `wrangler.toml`.
+- The worker is read-only by default. External actions remain review-gated and return a `blocked-until-approved` status until approved.
+- Implement persistent WebSocket upgrades through Durable Objects or a runtime gateway before production use.
+- Deployment requires human review and a signed release approval.
+
+## Secret-handling guardrails
+
+The packaging and deploy flows enforce the following posture across both AWS and Cloudflare:
+
+- **No secret rendering.** Workers, scripts, and build specs never log, serialize, or write credentials to disk.
+- **Environment-only bindings.** Account ARNs, external IDs, database passwords, and model API keys are read from environment variables or a secret manager at runtime.
+- **Default-deny.** Read-only endpoints are the default; write or transmission actions require a signed envelope and human approval.
+- **Manual review before promotion.** No automated promotion between staging and production buckets, and no live transmission from a static package.
+- **Exclude vault and client documents.** The packaging script strips the authorized 8821 vault, generated PDFs, spreadsheets, and CSV exports from every artifact.
+
+If a secret is ever committed in error, rotate it immediately at the source (AWS, Atlas, Cloudflare, or the model provider) before relying on history rewrites.
